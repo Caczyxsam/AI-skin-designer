@@ -1,0 +1,39 @@
+[project]
+name = "cs2-skin-ai"
+version = "0.1.0"
+description = "Generate CS2 Workbench-ready weapon finishes from a text prompt with local Stable Diffusion"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Core image / array
+    "pillow>=10.4",
+    "numpy>=2.1",
+    "opencv-python>=4.10",
+    # Config / CLI / UI
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "rich>=13.9",
+    "gradio>=4.44",
+    "requests>=2.32",
+    "tqdm>=4.66",
+    # 3D preview
+    "trimesh>=4.5",
+    "pyrender>=0.1.45",
+    # ML stack (torch is installed separately with the cu128 index — see setup_env.ps1)
+    "diffusers>=0.31",
+    "transformers>=4.46",
+    "accelerate>=1.1",
+    "safetensors>=0.4.5",
+]
+
+[tool.uv]
+# torch/torchvision come from the CUDA 12.8 index; pinned & installed by setup_env.ps1
+# so uv doesn't pull the default CPU/cu121 wheels that can't run on Blackwell (sm_120).
+
+[tool.uv.sources]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cs2skin"]

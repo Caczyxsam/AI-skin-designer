@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual env
+.venv/
+
+# Caches
+.cache/
+.huggingface/
+
+# Generated skins
+output/
+
+# Weapon templates + extracted game maps (Valve-derived; fetched via the CLI, not committed)
+assets/
+
+# Third-party tools (downloaded separately, e.g. ValveResourceFormat CLI)
+tools/
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,15 @@
+# cs2-skin-ai configuration. Override any field; delete the file to use defaults.
+device: cuda
+
+generation:
+  # Models (Hugging Face ids). SDXL base + a UV-wireframe ControlNet + fp16 VAE.
+  base_model: stabilityai/stable-diffusion-xl-base-1.0
+  controlnet_model: diffusers/controlnet-canny-sdxl-1.0
+
+  resolution: 1024              # SD tile size
+  texture_resolution: 2048      # exported TGA map size (2048 or 4096)
+  steps: 30
+  guidance_scale: 6.5
+  controlnet_scale: 0.55        # 0.4-0.7: higher = art hugs the weapon UV layout more tightly
+  seed: -1                      # -1 = derive from prompt
+  dtype: float16
