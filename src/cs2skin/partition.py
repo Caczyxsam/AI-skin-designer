@@ -130,17 +130,21 @@ def flatten_by_parts(albedo: Image.Image, uv_img: Image.Image, *, colors=None, n
     return Image.blend(alb, flat, float(strength))
 
 
-def gradient_map(albedo: Image.Image, palette, *, normalize: bool = True) -> Image.Image:
+def gradient_map(albedo: Image.Image, palette, *, normalize: bool = True,
+                 gamma: float = 0.7) -> Image.Image:
     """Recolour by mapping image TONES onto an ordered palette (darkest -> lightest).
 
     The AI's composition becomes the tonal structure; the colours are exactly the chosen palette,
     blended smoothly. This yields a cohesive duo/tri-tone instead of a random mess of colours.
+    `gamma` < 1 lifts the midtones toward the lighter palette colours so accents/glow show through
+    (the raw art tends to sit dark, which would otherwise bury the bright end of the ramp).
     """
     arr = np.asarray(albedo.convert("RGB")).astype(np.float32)
     lum = (arr @ np.array([0.299, 0.587, 0.114], dtype=np.float32)) / 255.0
     if normalize:                                   # stretch contrast so the full ramp is used
         lo, hi = np.percentile(lum, 2), np.percentile(lum, 98)
         lum = np.clip((lum - lo) / (hi - lo + 1e-6), 0.0, 1.0)
+    lum = lum ** float(gamma)                       # lift toward the bright colours
     cols = np.stack([_to_rgb(c) for c in palette]).astype(np.float32)
     if len(cols) == 1:
         cols = np.stack([cols[0] * 0.45, cols[0]])  # single colour -> shaded ramp

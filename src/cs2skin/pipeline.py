@@ -57,7 +57,9 @@ def generate_art(*, prompt: str, weapon: str = "ak47", skin_type: str = DEFAULT_
     rar = get_rarity(rarity)
     gen = generator or Generator(mock=mock)
 
-    user_prompt = f"{prompt}, {st.prompt}, {DESIGN_HINT}"
+    # Claude's prompt already describes the motif fully; keep the suffix short so SDXL's 77-token
+    # text limit doesn't truncate it. Palette + tonal map handle colour/contrast (no DESIGN_HINT).
+    user_prompt = f"{prompt}, {st.prompt}" if len(prompt) < 180 else prompt
     negative = f"{NEGATIVE}, {rar.negative_extra}"
     if reference_image is not None:        # always replicate the reference as closely as possible
         user_prompt = f"{user_prompt}, closely replicating the reference image as the skin design"
@@ -94,13 +96,14 @@ def style_skin(art: GenArt, *, palette: list | None = None, style: str | None = 
             base = flatten_by_parts(base, Image.open(wpn.uv_path), colors=main_colors or None,
                                     assign=color_placement, detail=fdetail, strength=flatten_strength)
 
-    # Always bake the weapon's ambient occlusion strongly, so physical detail (panel seams, magazine
-    # ribs, screws) stays visible and the skin never looks flat.
+    # Bake the weapon's ambient occlusion so physical detail (panel seams, mag ribs, screws) stays
+    # visible. Lighter on the palette path so bright accents / glow aren't darkened away.
     ao_path = wpn.base_map("ao")
     if ao_path is not None:
         from .partition import bake_ao
-        base = bake_ao(base, Image.open(ao_path), amount=_clamp(max(st.ao_amount, 0.8) * detail, 0, 1),
-                       edge=0.55 * _clamp(detail, 0, 1.6))
+        ao_amt = 0.45 if palette else _clamp(max(st.ao_amount, 0.8) * detail, 0, 1)
+        ao_edge = 0.5 if palette else 0.55 * _clamp(detail, 0, 1.6)
+        base = bake_ao(base, Image.open(ao_path), amount=ao_amt, edge=ao_edge)
     if brightness != 1.0:
         base = ImageEnhance.Brightness(base).enhance(float(brightness))
 
