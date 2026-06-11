@@ -69,28 +69,33 @@ def generate_art(*, prompt: str, weapon: str = "ak47", skin_type: str = DEFAULT_
                   prompt=prompt, gen=result)
 
 
-def style_skin(art: GenArt, *, style: str | None = None, colors: list[str] | None = None,
-               main_colors: list | None = None, color_placement: str = "auto",
-               brightness: float = 1.0, saturation: float = 1.0, detail: float = 1.0,
-               flatten_strength: float = 1.0) -> SkinResult:
-    """Apply styling to already-generated art and export. Fast (no GPU) — this is the 'edit' step.
+def style_skin(art: GenArt, *, palette: list | None = None, style: str | None = None,
+               colors: list[str] | None = None, main_colors: list | None = None,
+               color_placement: str = "auto", brightness: float = 1.0, saturation: float = 1.0,
+               detail: float = 1.0, flatten_strength: float = 1.0) -> SkinResult:
+    """Apply styling to already-generated art and export. Fast (no GPU).
 
-    main_colors: explicit main colours (else auto-extracted); color_placement 'auto' (by design) or
-    'size' (base vs details by part size); brightness/saturation/detail are multipliers.
+    palette: an ordered (dark->light) colour list — the art's tones are mapped onto it for a cohesive
+    recolour (the primary path, set by the Claude art-director). If no palette, falls back to the
+    older per-part flatten (main_colors / color_placement) for the CLI.
     """
     wpn, st = art.weapon, art.skin_type
     fin = get_style(style or st.finish_style)
     _clamp = lambda x, lo, hi: max(lo, min(hi, x))
 
-    base = ImageEnhance.Color(art.image).enhance(st.saturation * saturation)
+    if palette:
+        from .partition import gradient_map
+        base = gradient_map(art.image, palette)     # deliberate, cohesive colours
+    else:
+        base = ImageEnhance.Color(art.image).enhance(st.saturation * saturation)
+        if st.part_flatten and wpn.uv_path.exists():
+            from .partition import flatten_by_parts
+            fdetail = _clamp(max(st.flatten_detail, 0.55) * detail, 0.2, 1.1)
+            base = flatten_by_parts(base, Image.open(wpn.uv_path), colors=main_colors or None,
+                                    assign=color_placement, detail=fdetail, strength=flatten_strength)
 
-    if st.part_flatten and wpn.uv_path.exists():
-        from .partition import flatten_by_parts
-        fdetail = _clamp(max(st.flatten_detail, 0.55) * detail, 0.2, 1.1)
-        base = flatten_by_parts(base, Image.open(wpn.uv_path), colors=main_colors or None,
-                                assign=color_placement, detail=fdetail, strength=flatten_strength)
     # Always bake the weapon's ambient occlusion strongly, so physical detail (panel seams, magazine
-    # ribs, screws) stays visible and even a plain/black skin never looks flat.
+    # ribs, screws) stays visible and the skin never looks flat.
     ao_path = wpn.base_map("ao")
     if ao_path is not None:
         from .partition import bake_ao

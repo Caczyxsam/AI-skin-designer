@@ -130,6 +130,29 @@ def flatten_by_parts(albedo: Image.Image, uv_img: Image.Image, *, colors=None, n
     return Image.blend(alb, flat, float(strength))
 
 
+def gradient_map(albedo: Image.Image, palette, *, normalize: bool = True) -> Image.Image:
+    """Recolour by mapping image TONES onto an ordered palette (darkest -> lightest).
+
+    The AI's composition becomes the tonal structure; the colours are exactly the chosen palette,
+    blended smoothly. This yields a cohesive duo/tri-tone instead of a random mess of colours.
+    """
+    arr = np.asarray(albedo.convert("RGB")).astype(np.float32)
+    lum = (arr @ np.array([0.299, 0.587, 0.114], dtype=np.float32)) / 255.0
+    if normalize:                                   # stretch contrast so the full ramp is used
+        lo, hi = np.percentile(lum, 2), np.percentile(lum, 98)
+        lum = np.clip((lum - lo) / (hi - lo + 1e-6), 0.0, 1.0)
+    cols = np.stack([_to_rgb(c) for c in palette]).astype(np.float32)
+    if len(cols) == 1:
+        cols = np.stack([cols[0] * 0.45, cols[0]])  # single colour -> shaded ramp
+    k = len(cols)
+    pos = lum * (k - 1)
+    i0 = np.clip(np.floor(pos).astype(int), 0, k - 1)
+    i1 = np.clip(i0 + 1, 0, k - 1)
+    f = (pos - i0)[..., None]
+    out = cols[i0] * (1.0 - f) + cols[i1] * f
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
+
+
 def bake_ao(albedo: Image.Image, ao_img: Image.Image, amount: float = 0.8,
             edge: float = 0.55) -> Image.Image:
     """Bake the weapon's surface detail (panel lines, mag ribs, screws) into the colour so it stays
