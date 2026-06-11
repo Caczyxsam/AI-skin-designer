@@ -19,6 +19,7 @@ from .preview import render
 _WEAPONS = {w.display: w.key for w in list_weapons()}
 _TYPES = {t.label: t.key for t in list_skin_types()}
 _DEFAULT_TYPE_LABEL = next(lbl for lbl, k in _TYPES.items() if k == DEFAULT_TYPE)
+_PLACEMENT = {"By design (auto)": "auto", "Base vs details (by part size)": "size"}
 
 _CSS = """
 #title-row h1 { margin-bottom: 0; }
@@ -42,15 +43,19 @@ def _type_help(type_label: str) -> str:
     return f"**{t.label}** — {t.blurb}"
 
 
-def _run(prompt, type_label, weapon_label, reference, progress=gr.Progress()):
+def _run(prompt, type_label, weapon_label, reference, use_colors, color_base, color_details,
+         placement_label, brightness, saturation, detail, progress=gr.Progress()):
     if not prompt or not prompt.strip():
         raise gr.Error("Please enter a prompt describing the skin you want.")
     progress(0.2, desc="Loading model…")
     gen = _gen()
     progress(0.4, desc="Generating…")
+    mains = [color_base, color_details] if use_colors else None
     res = create_skin(
         prompt=prompt, weapon=_WEAPONS[weapon_label], skin_type=_TYPES[type_label],
-        reference_image=reference, generator=gen,
+        reference_image=reference, main_colors=mains, color_placement=_PLACEMENT[placement_label],
+        brightness=float(brightness), saturation=float(saturation), detail=float(detail),
+        generator=gen,
     )
     progress(0.9, desc="Rendering preview…")
     preview = render(res.weapon, res.maps, size=768)
@@ -82,6 +87,19 @@ def build() -> gr.Blocks:
                 weapon = gr.Dropdown(list(_WEAPONS), value="AK-47", label="③ Weapon")
                 with gr.Accordion("④ Reference image (optional — the skin will copy it)", open=False):
                     reference = gr.Image(label="Reference image", type="pil", height=180)
+                with gr.Accordion("🎨 Colors (optional)", open=False):
+                    use_colors = gr.Checkbox(value=False, label="Choose the main colors manually")
+                    with gr.Row():
+                        color_base = gr.ColorPicker(value="#ffffff", label="Base / main color")
+                        color_details = gr.ColorPicker(value="#111111", label="Second / details color")
+                    placement = gr.Radio(list(_PLACEMENT), value="By design (auto)",
+                                         label="Color placement",
+                                         info="‘Base vs details’ = the biggest parts get the base color, "
+                                              "smaller parts the second (e.g. base white, everything else black)")
+                with gr.Accordion("⚙️ Appearance (optional)", open=False):
+                    brightness = gr.Slider(0.5, 1.8, value=1.0, step=0.05, label="Brightness")
+                    saturation = gr.Slider(0.3, 1.8, value=1.0, step=0.05, label="Saturation")
+                    detail = gr.Slider(0.3, 1.6, value=1.0, step=0.05, label="Detail / texture strength")
                 go = gr.Button("✨ Generate Skin", variant="primary", elem_classes="generate-btn")
 
             # ---------- RESULT PANEL ----------
@@ -91,7 +109,10 @@ def build() -> gr.Blocks:
                 info = gr.Markdown("_Your generated skin and its details will appear here._")
 
         skintype.change(_type_help, skintype, type_help)
-        go.click(_run, [prompt, skintype, weapon, reference], [preview, gallery, info])
+        go.click(_run,
+                 [prompt, skintype, weapon, reference, use_colors, color_base, color_details,
+                  placement, brightness, saturation, detail],
+                 [preview, gallery, info])
     return demo
 
 

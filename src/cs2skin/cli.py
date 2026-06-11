@@ -74,6 +74,13 @@ def generate_cmd(
     style: str = typer.Option("", "--style", "-s", help="Finish style; blank = auto from type."),
     reference: str = typer.Option("", "--reference", "-r",
                                   help="Path to a reference image to replicate (optional)."),
+    color1: str = typer.Option("", "--color1", help="Base/main color hex, e.g. #ffffff (optional)."),
+    color2: str = typer.Option("", "--color2", help="Second/details color hex (optional)."),
+    placement: str = typer.Option("auto", "--placement",
+                                  help="Color placement: auto | size (base vs details by part size)."),
+    brightness: float = typer.Option(1.0, "--brightness"),
+    saturation: float = typer.Option(1.0, "--saturation"),
+    detail: float = typer.Option(1.0, "--detail", help="Detail / texture strength (0.3-1.6)."),
     seed: int = typer.Option(-1, "--seed"),
     mock: bool = typer.Option(False, "--mock", help="Use the procedural fallback (no SD model)."),
 ):
@@ -82,11 +89,14 @@ def generate_cmd(
     if reference:
         from PIL import Image
         ref_img = Image.open(reference)
+    mains = [c for c in (color1, color2) if c] or None
     console.print(f"[cyan]Generating[/] [{skin_type}] '{prompt}' for "
                   f"[bold]{get_weapon(weapon).display}[/]"
                   f"{' +ref' if ref_img else ''}{' (mock)' if mock else ''}…")
     res = create_skin(prompt=prompt, weapon=weapon, skin_type=skin_type,
                       style=style or None, reference_image=ref_img,
+                      main_colors=mains, color_placement=placement,
+                      brightness=brightness, saturation=saturation, detail=detail,
                       seed=None if seed < 0 else seed, mock=mock)
     console.print(f"[green]✓ Exported[/] → {res.out_dir}")
     console.print(f"  type={res.skin_type.label}  finish={res.style.workbench_name}  "

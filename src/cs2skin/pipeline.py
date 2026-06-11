@@ -38,15 +38,18 @@ class SkinResult:
 def create_skin(*, prompt: str, weapon: str = "ak47", skin_type: str = DEFAULT_TYPE,
                 style: str | None = None, rarity: str | None = DEFAULT_RARITY,
                 seed: int | None = None, colors: list[str] | None = None,
+                main_colors: list | None = None, color_placement: str = "auto",
+                brightness: float = 1.0, saturation: float = 1.0, detail: float = 1.0,
                 reference_image: Image.Image | None = None, reference_scale: float = 0.9,
                 flatten_strength: float = 1.0, generator: Generator | None = None,
                 mock: bool | None = None) -> SkinResult:
     """Prompt + skin TYPE (+ optional reference image) -> CS2-ready skin folder.
 
     The type drives the finish style, material prompt, PBR (metalness/roughness), and whether the
-    art is flattened to its main colours or left as a continuous pattern. A reference image (if
-    given) is replicated as closely as possible. AO is always baked in for physical surface detail
-    (panel lines, magazine ribs) so even a plain skin looks detailed.
+    art is flattened to its main colours or left as a continuous pattern. Optional controls:
+    main_colors (explicit list, else auto-extracted), color_placement ('auto' or 'size' = base/
+    details by part size), and brightness/saturation/detail multipliers. A reference image (if
+    given) is replicated as closely as possible. AO is always baked in for physical surface detail.
     """
     wpn = get_weapon(weapon)
     st = get_skin_type(skin_type)
@@ -62,19 +65,24 @@ def create_skin(*, prompt: str, weapon: str = "ak47", skin_type: str = DEFAULT_T
     result = gen.generate(user_prompt, wpn, seed=seed, negative=negative,
                           reference_image=reference_image, reference_scale=reference_scale,
                           controlnet_scale=rar.controlnet_scale, steps=rar.steps)
-    base = ImageEnhance.Color(result.image).enhance(st.saturation)
+    base = ImageEnhance.Color(result.image).enhance(st.saturation * saturation)
 
-    # Type-driven post-processing: collapse to the main colours (keeping rich shading)...
+    _clamp = lambda x, lo, hi: max(lo, min(hi, x))
+    # Type-driven post-processing: collapse to the main colours (explicit or auto), keeping shading.
     if st.part_flatten and wpn.uv_path.exists():
         from .partition import flatten_by_parts
-        base = flatten_by_parts(base, Image.open(wpn.uv_path), strength=flatten_strength,
-                                detail=max(st.flatten_detail, 0.55))
+        fdetail = _clamp(max(st.flatten_detail, 0.55) * detail, 0.2, 1.1)
+        base = flatten_by_parts(base, Image.open(wpn.uv_path), colors=main_colors or None,
+                                assign=color_placement, detail=fdetail, strength=flatten_strength)
     # ...then ALWAYS bake the weapon's ambient occlusion strongly, so physical detail (panel seams,
     # magazine ribs, screws) stays visible and even a plain/black skin never looks flat.
     ao_path = wpn.base_map("ao")
     if ao_path is not None:
         from .partition import bake_ao
-        base = bake_ao(base, Image.open(ao_path), amount=max(st.ao_amount, 0.8))
+        base = bake_ao(base, Image.open(ao_path), amount=_clamp(max(st.ao_amount, 0.8) * detail, 0, 1),
+                       edge=0.55 * _clamp(detail, 0, 1.6))
+    if brightness != 1.0:
+        base = ImageEnhance.Brightness(base).enhance(float(brightness))
 
     derived = pbr.derive_all(base, metal_bias=st.metal_bias, roughness_base=st.roughness_base)
     maps = SkinMaps(

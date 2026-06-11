@@ -55,16 +55,32 @@ def _main_colors(arr: np.ndarray, k: int = 2) -> np.ndarray:
     return centers
 
 
-def flatten_by_parts(albedo: Image.Image, uv_img: Image.Image, *, main_colors: int = 2,
-                     strength: float = 1.0, detail: float = 0.62, dilate: int = 2,
-                     min_area: int = 90) -> Image.Image:
-    """Recolour the gun with only `main_colors` (default 2) MAIN colours, each richly shaded.
+def _to_rgb(c) -> np.ndarray:
+    """Parse a colour given as (r,g,b), '#rrggbb', or 'rgb(r,g,b)' into a float32 RGB array."""
+    if isinstance(c, (tuple, list, np.ndarray)):
+        return np.asarray(c[:3], dtype=np.float32)
+    s = str(c).strip()
+    if s.startswith("#"):
+        s = s[1:]
+        return np.array([int(s[i:i + 2], 16) for i in (0, 2, 4)], dtype=np.float32)
+    if s.lower().startswith("rgb"):
+        import re
+        n = re.findall(r"[\d.]+", s)
+        return np.array([float(n[0]), float(n[1]), float(n[2])], dtype=np.float32)
+    raise ValueError(f"unrecognised colour {c!r}")
 
-    Two dominant colours are extracted from the generated art; every UV island is snapped to
-    whichever main colour it's closest to, then each pixel is modulated by the original art's local
-    luminance — so the skin reads as a cohesive ≤2-colour design but keeps full light/dark detail
-    (shapes, gradients, edges) instead of a dead-flat fill. `detail` (0..1) sets how much variation
-    is kept; `strength` blends with the original.
+
+def flatten_by_parts(albedo: Image.Image, uv_img: Image.Image, *, colors=None, n_main: int = 2,
+                     assign: str = "auto", strength: float = 1.0, detail: float = 0.62,
+                     dilate: int = 2, min_area: int = 90) -> Image.Image:
+    """Recolour the gun with a small number of MAIN colours, each richly shaded.
+
+    colors: explicit list of main colours (e.g. ['#ffffff', '#000000']); None = auto-extract them.
+    assign: 'auto'  -> each part takes the main colour closest to its generated content;
+            'size'  -> the largest parts get colour 0 (base), smaller parts colour 1 (details), ...
+                       (this is what lets you do "base white, everything else black").
+    Shading is ADDITIVE (tint + local-luminance offset) so even a pure-black part keeps its detail
+    instead of going dead flat. `detail` scales how strong that shading is.
     """
     alb = albedo.convert("RGB")
     size = alb.size
@@ -72,19 +88,37 @@ def flatten_by_parts(albedo: Image.Image, uv_img: Image.Image, *, main_colors: i
         return alb
     arr = np.asarray(alb).astype(np.float32)
     lum = arr @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
-    mains = _main_colors(arr, max(1, main_colors))
     seg = segment_islands(uv_img, size, dilate=dilate, min_area=min_area)
     if seg is None:
         return alb
     labels, valid = seg
+
+    mains = (np.stack([_to_rgb(c) for c in colors]) if colors else _main_colors(arr, max(1, n_main)))
+    k = len(mains)
+
+    bucket = {}
+    if assign == "size" and k > 1 and valid:
+        areas = {l: int((labels == l).sum()) for l in valid}
+        order = sorted(valid, key=lambda l: -areas[l])
+        total = sum(areas.values()) + 1e-9
+        cuts = {2: [0.62], 3: [0.45, 0.80]}.get(k, [i / k for i in range(1, k)])
+        cum, bi = 0.0, 0
+        for l in order:
+            cum += areas[l] / total
+            while bi < len(cuts) and cum > cuts[bi]:
+                bi += 1
+            bucket[l] = min(bi, k - 1)
+
     out = arr.copy()
     for lab in valid:
         m = labels == lab
-        mean_c = arr[m].reshape(-1, 3).mean(axis=0)
-        tint = mains[np.argmin(((mains - mean_c) ** 2).sum(axis=1))]   # nearest of the main colours
-        ratio = lum[m] / (lum[m].mean() + 1e-3)                        # local light/dark, ~1.0 mean
-        ratio = np.clip(1.0 + detail * (ratio - 1.0), 0.30, 2.0)       # keep `detail` of variation
-        out[m] = np.clip(tint[None, :] * ratio[:, None], 0, 255)
+        if bucket:
+            tint = mains[bucket[lab]]
+        else:
+            mean_c = arr[m].reshape(-1, 3).mean(axis=0)
+            tint = mains[int(np.argmin(((mains - mean_c) ** 2).sum(axis=1)))]
+        offset = (lum[m] - lum[m].mean()) * detail          # signed local detail -> shades
+        out[m] = np.clip(tint[None, :] + offset[:, None], 0, 255)
     out = out.astype(np.uint8)
     # Fill the thin green seam lines from neighbouring islands so no green shows through.
     green = _green_lines(np.asarray(uv_img.convert("RGB").resize(size)))
