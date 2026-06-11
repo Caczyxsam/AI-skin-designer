@@ -20,8 +20,8 @@ from .generate import GenResult, Generator, NEGATIVE
 from .rarity import Rarity, get_rarity, DEFAULT_RARITY
 from .skintype import SkinType, get_skin_type, DEFAULT_TYPE
 
-# A small (untrained) hint that keeps compositions clean.
-DESIGN_HINT = "integrated with weapon shape, cohesive natural palette"
+# Design hint: two main colours, richly shaded, always highly detailed (never a flat fill).
+DESIGN_HINT = "two main colours with many shades, highly detailed, never flat"
 
 
 @dataclass
@@ -35,28 +35,18 @@ class SkinResult:
     maps: SkinMaps
 
 
-# Reference-image use modes. "model" = replicate the skin in the image closely; "theme" = borrow
-# its style/colours. Each maps to an IP-Adapter strength + a prompt nudge.
-REFERENCE_MODES = {
-    "model": (0.9, "closely replicating the reference skin design"),
-    "theme": (0.55, "themed after the reference image's colours and style"),
-}
-DEFAULT_REFERENCE_MODE = "theme"
-
-
 def create_skin(*, prompt: str, weapon: str = "ak47", skin_type: str = DEFAULT_TYPE,
                 style: str | None = None, rarity: str | None = DEFAULT_RARITY,
                 seed: int | None = None, colors: list[str] | None = None,
-                reference_image: Image.Image | None = None,
-                reference_mode: str = DEFAULT_REFERENCE_MODE, reference_scale: float | None = None,
+                reference_image: Image.Image | None = None, reference_scale: float = 0.9,
                 flatten_strength: float = 1.0, generator: Generator | None = None,
                 mock: bool | None = None) -> SkinResult:
-    """Prompt + skin TYPE (+ optional quality + reference) -> CS2-ready skin folder.
+    """Prompt + skin TYPE (+ optional reference image) -> CS2-ready skin folder.
 
     The type drives the finish style, material prompt, PBR (metalness/roughness), and whether the
-    art is flattened per part or left as a continuous pattern. Quality adds complexity. A reference
-    image is used either as a 'model' (replicate the skin) or a 'theme' (style/colours only). AO is
-    baked in for physical surface detail (panel lines, magazine ribs).
+    art is flattened to its main colours or left as a continuous pattern. A reference image (if
+    given) is replicated as closely as possible. AO is always baked in for physical surface detail
+    (panel lines, magazine ribs) so even a plain skin looks detailed.
     """
     wpn = get_weapon(weapon)
     st = get_skin_type(skin_type)
@@ -64,30 +54,27 @@ def create_skin(*, prompt: str, weapon: str = "ak47", skin_type: str = DEFAULT_T
     fin = get_style(style or st.finish_style)
     gen = generator or Generator(mock=mock)
 
-    user_prompt = f"{prompt}, {st.prompt}, {rar.prompt_modifiers}, {DESIGN_HINT}"
+    user_prompt = f"{prompt}, {st.prompt}, {DESIGN_HINT}"
     negative = f"{NEGATIVE}, {rar.negative_extra}"
-
-    ip_scale, ref_hint = REFERENCE_MODES.get(reference_mode, REFERENCE_MODES[DEFAULT_REFERENCE_MODE])
-    if reference_scale is not None:        # explicit override of the mode's default strength
-        ip_scale = reference_scale
-    if reference_image is not None:
-        user_prompt = f"{user_prompt}, {ref_hint}"
+    if reference_image is not None:        # always replicate the reference as closely as possible
+        user_prompt = f"{user_prompt}, closely replicating the reference image as the skin design"
 
     result = gen.generate(user_prompt, wpn, seed=seed, negative=negative,
-                          reference_image=reference_image, reference_scale=ip_scale,
+                          reference_image=reference_image, reference_scale=reference_scale,
                           controlnet_scale=rar.controlnet_scale, steps=rar.steps)
     base = ImageEnhance.Color(result.image).enhance(st.saturation)
 
-    # Type-driven post-processing.
+    # Type-driven post-processing: collapse to the main colours (keeping rich shading)...
     if st.part_flatten and wpn.uv_path.exists():
         from .partition import flatten_by_parts
         base = flatten_by_parts(base, Image.open(wpn.uv_path), strength=flatten_strength,
-                                detail=st.flatten_detail)
-    # Bake the weapon's ambient occlusion so physical lines (panel seams, mag ribs) stay visible.
+                                detail=max(st.flatten_detail, 0.55))
+    # ...then ALWAYS bake the weapon's ambient occlusion strongly, so physical detail (panel seams,
+    # magazine ribs, screws) stays visible and even a plain/black skin never looks flat.
     ao_path = wpn.base_map("ao")
     if ao_path is not None:
         from .partition import bake_ao
-        base = bake_ao(base, Image.open(ao_path), amount=st.ao_amount)
+        base = bake_ao(base, Image.open(ao_path), amount=max(st.ao_amount, 0.8))
 
     derived = pbr.derive_all(base, metal_bias=st.metal_bias, roughness_base=st.roughness_base)
     maps = SkinMaps(

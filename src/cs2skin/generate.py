@@ -191,7 +191,10 @@ class Generator:
             pipe.set_ip_adapter_scale(reference_scale)
             kwargs["ip_adapter_image"] = reference_image.convert("RGB")
         elif self._ip_loaded:
-            pipe.set_ip_adapter_scale(0.0)   # disable when no reference this call
+            # Once loaded, the IP-Adapter stays attached and the UNet then REQUIRES an image input.
+            # Pass a black image at scale 0 so it has no effect but the requirement is satisfied.
+            pipe.set_ip_adapter_scale(0.0)
+            kwargs["ip_adapter_image"] = Image.new("RGB", (224, 224), (0, 0, 0))
         out = pipe(**kwargs)
         img = out.images[0]
         tex = self.cfg.texture_resolution

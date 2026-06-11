@@ -46,15 +46,25 @@ def segment_islands(uv_img: Image.Image, size: tuple[int, int], *, dilate: int =
     return labels, valid
 
 
-def flatten_by_parts(albedo: Image.Image, uv_img: Image.Image, *, palette: int = 10,
-                     strength: float = 1.0, detail: float = 0.6, dilate: int = 2,
-                     min_area: int = 90) -> Image.Image:
-    """Give each UV island ONE colour while keeping its light/dark detail.
+def _main_colors(arr: np.ndarray, k: int = 2) -> np.ndarray:
+    """The k dominant colours of the image (k-means), brightest-first."""
+    small = arr[::6, ::6].reshape(-1, 3).astype(np.float32)
+    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 12, 1.0)
+    _, _, centers = cv2.kmeans(small, k, None, crit, 4, cv2.KMEANS_PP_CENTERS)
+    centers = centers[np.argsort(-(centers @ np.array([0.299, 0.587, 0.114], np.float32)))]
+    return centers
 
-    Each island is tinted with its dominant colour, but every pixel is then modulated by the
-    original art's local luminance — so painted detail (cracks, gradients, edges) survives as
-    lighter/darker shades of that colour instead of a dead-flat fill. `detail` (0..1) controls how
-    much of that variation is kept; `strength` blends the whole result with the original.
+
+def flatten_by_parts(albedo: Image.Image, uv_img: Image.Image, *, main_colors: int = 2,
+                     strength: float = 1.0, detail: float = 0.62, dilate: int = 2,
+                     min_area: int = 90) -> Image.Image:
+    """Recolour the gun with only `main_colors` (default 2) MAIN colours, each richly shaded.
+
+    Two dominant colours are extracted from the generated art; every UV island is snapped to
+    whichever main colour it's closest to, then each pixel is modulated by the original art's local
+    luminance — so the skin reads as a cohesive ≤2-colour design but keeps full light/dark detail
+    (shapes, gradients, edges) instead of a dead-flat fill. `detail` (0..1) sets how much variation
+    is kept; `strength` blends with the original.
     """
     alb = albedo.convert("RGB")
     size = alb.size
@@ -62,8 +72,7 @@ def flatten_by_parts(albedo: Image.Image, uv_img: Image.Image, *, palette: int =
         return alb
     arr = np.asarray(alb).astype(np.float32)
     lum = arr @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
-    # Cohesive palette for the per-island tint (keeps the whole gun on a limited palette).
-    quant = np.asarray(alb.quantize(colors=palette, method=Image.MEDIANCUT).convert("RGB"))
+    mains = _main_colors(arr, max(1, main_colors))
     seg = segment_islands(uv_img, size, dilate=dilate, min_area=min_area)
     if seg is None:
         return alb
@@ -71,10 +80,10 @@ def flatten_by_parts(albedo: Image.Image, uv_img: Image.Image, *, palette: int =
     out = arr.copy()
     for lab in valid:
         m = labels == lab
-        colors, counts = np.unique(quant[m].reshape(-1, 3), axis=0, return_counts=True)
-        tint = colors[counts.argmax()].astype(np.float32)          # one colour for the part
-        ratio = lum[m] / (lum[m].mean() + 1e-3)                    # local light/dark, ~1.0 mean
-        ratio = np.clip(1.0 + detail * (ratio - 1.0), 0.35, 1.9)   # keep `detail` of the variation
+        mean_c = arr[m].reshape(-1, 3).mean(axis=0)
+        tint = mains[np.argmin(((mains - mean_c) ** 2).sum(axis=1))]   # nearest of the main colours
+        ratio = lum[m] / (lum[m].mean() + 1e-3)                        # local light/dark, ~1.0 mean
+        ratio = np.clip(1.0 + detail * (ratio - 1.0), 0.30, 2.0)       # keep `detail` of variation
         out[m] = np.clip(tint[None, :] * ratio[:, None], 0, 255)
     out = out.astype(np.uint8)
     # Fill the thin green seam lines from neighbouring islands so no green shows through.
@@ -87,10 +96,17 @@ def flatten_by_parts(albedo: Image.Image, uv_img: Image.Image, *, palette: int =
     return Image.blend(alb, flat, float(strength))
 
 
-def bake_ao(albedo: Image.Image, ao_img: Image.Image, amount: float = 0.7) -> Image.Image:
-    """Multiply the weapon's ambient-occlusion (crevices, panel lines, mag ribs) into the colour so
-    physical surface detail stays visible even on a solid-coloured part. amount in [0,1]."""
+def bake_ao(albedo: Image.Image, ao_img: Image.Image, amount: float = 0.8,
+            edge: float = 0.55) -> Image.Image:
+    """Bake the weapon's surface detail (panel lines, mag ribs, screws) into the colour so it stays
+    visible on ANY colour — even plain black. Two effects:
+      - cavity darkening: crevices get darker (`amount`),
+      - edge highlighting: the rims around those crevices get lighter (`edge`),
+    so every line reads as a dark groove + a bright edge and 'pops' regardless of base colour."""
     a = np.asarray(albedo.convert("RGB")).astype(np.float32)
     ao = np.asarray(ao_img.convert("L").resize(albedo.size)).astype(np.float32) / 255.0
-    ao = 1.0 - amount * (1.0 - ao)                                 # lerp toward 1 by `amount`
-    return Image.fromarray(np.clip(a * ao[..., None], 0, 255).astype(np.uint8), "RGB")
+    out = a * (1.0 - amount * (1.0 - ao))[..., None]              # darken cavities
+    if edge > 0 and cv2 is not None:
+        hp = ao - cv2.GaussianBlur(ao, (0, 0), 2.0)              # high-pass: +edges, -grooves
+        out = out + (edge * 255.0) * hp[..., None]               # lift edges, deepen grooves
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")

@@ -54,18 +54,6 @@ def assets_cmd(weapon: str):
     console.print(missing_assets_report(get_weapon(weapon)))
 
 
-@app.command("rarities")
-def rarities_cmd():
-    """List quality/rarity tiers (the complexity dial)."""
-    from .rarity import list_rarities
-    table = Table(title="Quality tiers")
-    table.add_column("key"); table.add_column("tier"); table.add_column("complexity", justify="center")
-    table.add_column("default style")
-    for r in list_rarities():
-        table.add_row(r.key, r.label, "▮" * r.complexity, r.suggested_style)
-    console.print(table)
-
-
 @app.command("types")
 def types_cmd():
     """List skin types (the primary material/look choice)."""
@@ -83,14 +71,9 @@ def generate_cmd(
     skin_type: str = typer.Option("painted", "--type", "-t",
                                   help="painted|metallic|hydrographic|pattern|patina|hybrid."),
     weapon: str = typer.Option("ak47", "--weapon", "-w"),
-    rarity: str = typer.Option("none", "--rarity", "-q",
-                               help="Optional quality: none|blue|purple|pink|red (complexity)."),
     style: str = typer.Option("", "--style", "-s", help="Finish style; blank = auto from type."),
-    reference: str = typer.Option("", "--reference", "-r", help="Path to a reference image (optional)."),
-    ref_mode: str = typer.Option("theme", "--ref-mode",
-                                 help="How to use the reference: model (replicate) | theme (style)."),
-    ref_scale: float = typer.Option(-1.0, "--ref-scale",
-                                    help="Override reference strength 0..1 (-1 = auto from mode)."),
+    reference: str = typer.Option("", "--reference", "-r",
+                                  help="Path to a reference image to replicate (optional)."),
     seed: int = typer.Option(-1, "--seed"),
     mock: bool = typer.Option(False, "--mock", help="Use the procedural fallback (no SD model)."),
 ):
@@ -100,15 +83,14 @@ def generate_cmd(
         from PIL import Image
         ref_img = Image.open(reference)
     console.print(f"[cyan]Generating[/] [{skin_type}] '{prompt}' for "
-                  f"[bold]{get_weapon(weapon).display}[/] [{rarity}]"
+                  f"[bold]{get_weapon(weapon).display}[/]"
                   f"{' +ref' if ref_img else ''}{' (mock)' if mock else ''}…")
-    res = create_skin(prompt=prompt, weapon=weapon, skin_type=skin_type, rarity=rarity,
-                      style=style or None, reference_image=ref_img, reference_mode=ref_mode,
-                      reference_scale=None if ref_scale < 0 else ref_scale,
+    res = create_skin(prompt=prompt, weapon=weapon, skin_type=skin_type,
+                      style=style or None, reference_image=ref_img,
                       seed=None if seed < 0 else seed, mock=mock)
     console.print(f"[green]✓ Exported[/] → {res.out_dir}")
-    console.print(f"  type={res.skin_type.label}  quality={res.rarity.label}  "
-                  f"finish={res.style.workbench_name}  seed={res.gen.seed}")
+    console.print(f"  type={res.skin_type.label}  finish={res.style.workbench_name}  "
+                  f"seed={res.gen.seed}")
     console.print(f"  Open [bold]{res.out_dir / 'IMPORT.md'}[/] for Workbench steps.")
 
 

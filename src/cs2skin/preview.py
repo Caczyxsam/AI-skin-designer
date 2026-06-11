@@ -107,7 +107,7 @@ def _render_3d(weapon: Weapon, maps: SkinMaps, size: int) -> Image.Image | None:
         r.delete()
         # Display tone-map: lift shadows so dark albedos read clearly, keep specular highlights.
         c = color.astype(np.float32) / 255.0
-        c = np.clip(c ** 0.55 * 1.25, 0.0, 1.0)
+        c = np.clip(c ** 0.5 * 1.4, 0.0, 1.0)
         return Image.fromarray((c * 255).astype(np.uint8))
     except Exception:
         return None
