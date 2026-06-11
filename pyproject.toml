@@ -24,6 +24,7 @@ dependencies = [
     "accelerate>=1.1",
     "safetensors>=0.4.5",
     "gguf>=0.10",          # for the optional GGUF-quantized FLUX backend
+    "anthropic>=0.40",     # optional Claude art-director (needs ANTHROPIC_API_KEY)
 ]
 
 [tool.uv]

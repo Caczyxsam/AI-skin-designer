@@ -21,8 +21,10 @@ from .preview import render
 
 _WEAPONS = {w.display: w.key for w in list_weapons()}
 _TYPES = {t.label: t.key for t in list_skin_types()}
+_TYPE_LABEL = {k: lbl for lbl, k in _TYPES.items()}
 _DEFAULT_TYPE_LABEL = next(lbl for lbl, k in _TYPES.items() if k == DEFAULT_TYPE)
 _PLACEMENT = {"By design (auto)": "auto", "Base vs details (by part size)": "size"}
+_PLACEMENT_LABEL = {v: k for k, v in _PLACEMENT.items()}
 
 _CSS = """
 #title-row h1 { margin-bottom: 0; }
@@ -44,6 +46,33 @@ def _gen() -> Generator:
 def _type_help(type_label: str) -> str:
     t = get_skin_type(_TYPES[type_label])
     return f"**{t.label}** — {t.blurb}"
+
+
+def _design(idea, type_label, weapon_label, progress=gr.Progress()):
+    """Let Claude art-direct the design from a short idea; fills in the form fields."""
+    from . import director
+    if not idea or not idea.strip():
+        raise gr.Error("Type a short idea first (e.g. 'a cool dragon AK'), then Design with Claude.")
+    if not director.available():
+        raise gr.Error("Set the ANTHROPIC_API_KEY environment variable to use Claude design "
+                       "(get a key at console.anthropic.com). The rest of the tool works without it.")
+    progress(0.3, desc="Claude is designing…")
+    try:
+        spec = director.design_skin(idea.strip(), _WEAPONS[weapon_label], skin_type=_TYPES[type_label])
+    except Exception as e:
+        raise gr.Error(f"Claude design failed: {e}")
+    base = spec.main_colors[0] if spec.main_colors else "#ffffff"
+    second = (spec.main_colors[1] if len(spec.main_colors) > 1
+              else (spec.accent_colors[0] if spec.accent_colors else "#111111"))
+    note = (f"### 🎨 Claude designed it\n**{get_skin_type(spec.skin_type).label}** · "
+            f"placement: {spec.color_placement} · colors: {', '.join(spec.main_colors) or 'auto'}\n\n"
+            f"_{spec.rationale}_\n\nReview the fields, then hit **Generate**.")
+    return (gr.update(value=_TYPE_LABEL.get(spec.skin_type, _DEFAULT_TYPE_LABEL)),
+            gr.update(value=spec.prompt),
+            gr.update(value=bool(spec.main_colors)),
+            gr.update(value=base), gr.update(value=second),
+            gr.update(value=_PLACEMENT_LABEL.get(spec.color_placement, "By design (auto)")),
+            note)
 
 
 def _style_kwargs(use_colors, c1, c2, placement_label, brightness, saturation, detail):
@@ -105,6 +134,8 @@ def build() -> gr.Blocks:
                 prompt = gr.Textbox(
                     label="② Prompt", lines=3, autofocus=True,
                     placeholder="Describe the look — theme, colors, motifs.\ne.g. emerald green with brushed bronze accents")
+                design_btn = gr.Button("✨ Design with Claude (turn a short idea into a full design)",
+                                       size="sm")
                 weapon = gr.Dropdown(list(_WEAPONS), value="AK-47", label="③ Weapon")
                 with gr.Accordion("④ Reference image (optional — the skin will copy it)", open=False):
                     reference = gr.Image(label="Reference image", type="pil", height=180)
@@ -138,6 +169,8 @@ def build() -> gr.Blocks:
         edit_inputs = [art_state, use_colors, color_base, color_details, placement,
                        brightness, saturation, detail]
         skintype.change(_type_help, skintype, type_help)
+        design_btn.click(_design, [prompt, skintype, weapon],
+                         [skintype, prompt, use_colors, color_base, color_details, placement, info])
         go.click(_generate,
                  [prompt, skintype, weapon, reference, seed, lock,
                   use_colors, color_base, color_details, placement, brightness, saturation, detail],
