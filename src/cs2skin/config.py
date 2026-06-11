@@ -38,8 +38,23 @@ class Paths:
 
 @dataclass
 class GenerationConfig:
+    backend: str = "sdxl"               # "sdxl" (default) or "flux"
+
+    # --- SDXL backend ---
     base_model: str = "stabilityai/stable-diffusion-xl-base-1.0"
     controlnet_model: str = "diffusers/controlnet-canny-sdxl-1.0"
+
+    # --- FLUX backend (optional; higher quality + better prompt-following, slower, more VRAM) ---
+    # The GGUF transformer keeps it inside 16GB. Default is the open Apache-2.0 schnell model.
+    # UV-alignment ControlNet for FLUX is optional (set flux_controlnet); without it FLUX is
+    # text-to-image and the per-part flatten still uses the UV layout.
+    flux_model: str = "black-forest-labs/FLUX.1-schnell"
+    flux_transformer_gguf: str = ("https://huggingface.co/city96/FLUX.1-schnell-gguf/"
+                                  "blob/main/flux1-schnell-Q4_K_S.gguf")
+    flux_controlnet: str = ""           # e.g. a FLUX canny ControlNet (dev); empty = no UV control
+    flux_steps: int = 4                 # schnell = 4; dev ≈ 28
+    flux_guidance: float = 0.0          # schnell = 0; dev ≈ 3.5
+
     resolution: int = 1024              # SD generation tile size; upscaled to texture_resolution
     texture_resolution: int = 2048      # final exported map size (2048 or 4096)
     steps: int = 30

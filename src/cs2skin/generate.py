@@ -52,6 +52,7 @@ class Generator:
         self.mock = (not _torch_available()) if mock is None else mock
         self._pipe = None
         self._ip_loaded = False
+        self._flux_has_controlnet = False
 
     # -- public API ---------------------------------------------------------------------------
 
@@ -76,11 +77,14 @@ class Generator:
                             controlnet_scale=controlnet_scale, steps=steps)
         return GenResult(img, seed, full_prompt, mock=False)
 
-    # -- real SDXL path -----------------------------------------------------------------------
+    # -- backend loading ----------------------------------------------------------------------
 
     def _load(self):
         if self._pipe is not None:
             return self._pipe
+        return self._load_flux() if self.cfg.backend == "flux" else self._load_sdxl()
+
+    def _load_sdxl(self):
         import torch
         from diffusers import (
             StableDiffusionXLControlNetPipeline,
@@ -97,6 +101,45 @@ class Generator:
         )
         pipe.enable_model_cpu_offload()        # fits comfortably in 16GB
         pipe.enable_vae_tiling()
+        self._pipe = pipe
+        return pipe
+
+    def _load_flux(self):
+        """Optional FLUX backend. GGUF-quantized transformer to fit 16GB; optional FLUX ControlNet
+        for UV alignment (off by default — schnell has no good control model)."""
+        import torch
+        dtype = torch.bfloat16
+        components = {}
+        if self.cfg.flux_transformer_gguf:
+            from diffusers import FluxTransformer2DModel, GGUFQuantizationConfig
+            components["transformer"] = FluxTransformer2DModel.from_single_file(
+                self.cfg.flux_transformer_gguf,
+                quantization_config=GGUFQuantizationConfig(compute_dtype=dtype),
+                torch_dtype=dtype)
+        try:
+            if self.cfg.flux_controlnet:
+                from diffusers import FluxControlNetModel, FluxControlNetPipeline
+                controlnet = FluxControlNetModel.from_pretrained(self.cfg.flux_controlnet,
+                                                                 torch_dtype=dtype)
+                pipe = FluxControlNetPipeline.from_pretrained(
+                    self.cfg.flux_model, controlnet=controlnet, torch_dtype=dtype, **components)
+                self._flux_has_controlnet = True
+            else:
+                from diffusers import FluxPipeline
+                pipe = FluxPipeline.from_pretrained(self.cfg.flux_model, torch_dtype=dtype, **components)
+                self._flux_has_controlnet = False
+        except Exception as e:
+            msg = str(e).lower()
+            if "gated" in msg or "not a valid model identifier" in msg or "authoriz" in msg \
+                    or "401" in msg or "403" in msg:
+                raise RuntimeError(
+                    f"FLUX model '{self.cfg.flux_model}' is gated on Hugging Face. One-time setup:\n"
+                    "  1. Create a token: https://huggingface.co/settings/tokens\n"
+                    "  2. Log in:  .\\.venv\\Scripts\\python.exe -m huggingface_hub.commands.huggingface_cli login\n"
+                    f"  3. Accept the model terms at https://huggingface.co/{self.cfg.flux_model}\n"
+                    "Then retry. (SDXL backend needs no login.)") from e
+            raise
+        pipe.enable_model_cpu_offload()
         self._pipe = pipe
         return pipe
 
@@ -128,6 +171,8 @@ class Generator:
     def _diffuse(self, prompt: str, negative: str, weapon: Weapon, seed: int, *,
                  reference_image: Image.Image | None = None, reference_scale: float = 0.6,
                  controlnet_scale: float | None = None, steps: int | None = None) -> Image.Image:
+        if self.cfg.backend == "flux":
+            return self._diffuse_flux(prompt, weapon, seed, controlnet_scale, steps)
         import torch
         pipe = self._load()
         size = self.cfg.resolution
@@ -149,6 +194,25 @@ class Generator:
             pipe.set_ip_adapter_scale(0.0)   # disable when no reference this call
         out = pipe(**kwargs)
         img = out.images[0]
+        tex = self.cfg.texture_resolution
+        return img.resize((tex, tex), Image.LANCZOS)
+
+    def _diffuse_flux(self, prompt: str, weapon: Weapon, seed: int,
+                      controlnet_scale: float | None, steps: int | None) -> Image.Image:
+        """FLUX generation. No negative prompt / IP-Adapter (FLUX doesn't use them); T5 allows long
+        prompts (no 77-token cap). UV ControlNet only if a flux_controlnet is configured."""
+        import torch
+        pipe = self._load()
+        size = self.cfg.resolution
+        gen = torch.Generator(device="cpu").manual_seed(seed)
+        kwargs = dict(prompt=prompt, width=size, height=size, generator=gen,
+                      num_inference_steps=steps or self.cfg.flux_steps,
+                      guidance_scale=self.cfg.flux_guidance, max_sequence_length=512)
+        if self._flux_has_controlnet:
+            kwargs["control_image"] = self._control_image(weapon, size)
+            kwargs["controlnet_conditioning_scale"] = (
+                controlnet_scale if controlnet_scale is not None else self.cfg.controlnet_scale)
+        img = pipe(**kwargs).images[0]
         tex = self.cfg.texture_resolution
         return img.resize((tex, tex), Image.LANCZOS)
 
