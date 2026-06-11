@@ -2,22 +2,22 @@
 device: cuda
 
 generation:
-  # Backend: "sdxl" (default, fast, full UV-ControlNet) or "flux" (higher quality + prompt-following,
-  # slower, more VRAM). FLUX downloads ~15GB on first use; uses a GGUF transformer to fit 16GB.
-  # NOTE: FLUX models are GATED on Hugging Face — set backend: flux requires a one-time
-  #   `huggingface_cli login` (token) + accepting the model terms. SDXL needs no login.
+  # Backend: "sdxl" (default — fast ~20s, UV-aligned) or "flux" (higher fidelity, ~9 min/image on
+  # 16GB, UV-aligned via FLUX ControlNet). Verified: FLUX-dev+ControlNet peaks ~13.7GB, fits 16GB.
+  # NOTE: FLUX models are GATED on Hugging Face — backend: flux needs a one-time `huggingface_cli
+  #   login` + accepting the FLUX.1-dev terms. SDXL needs no login. First FLUX run downloads ~20GB.
   backend: sdxl
 
   # SDXL backend
   base_model: stabilityai/stable-diffusion-xl-base-1.0
   controlnet_model: diffusers/controlnet-canny-sdxl-1.0
 
-  # FLUX backend (only used when backend: flux)
-  flux_model: black-forest-labs/FLUX.1-schnell
-  flux_transformer_gguf: "https://huggingface.co/city96/FLUX.1-schnell-gguf/blob/main/flux1-schnell-Q4_K_S.gguf"
-  flux_controlnet: ""           # optional FLUX canny ControlNet for UV alignment (dev models)
-  flux_steps: 4                 # schnell = 4, dev ~28
-  flux_guidance: 0.0            # schnell = 0, dev ~3.5
+  # FLUX backend (only used when backend: flux). Dev + Canny ControlNet = UV-aligned skins.
+  flux_model: black-forest-labs/FLUX.1-dev
+  flux_transformer_gguf: "https://huggingface.co/city96/FLUX.1-dev-gguf/blob/main/flux1-dev-Q4_K_S.gguf"
+  flux_controlnet: "InstantX/FLUX.1-dev-Controlnet-Canny"   # UV alignment (verified working)
+  flux_steps: 28
+  flux_guidance: 3.5
 
   resolution: 1024              # SD tile size
   texture_resolution: 2048      # exported TGA map size (2048 or 4096)
