@@ -1,8 +1,10 @@
-"""Orchestrates prompt -> CS2-ready skin folder.
+"""Orchestrates prompt -> CS2-ready skin folder, in two stages so skins can be EDITED:
 
-    generate (SDXL/ControlNet) -> type-driven treatment (flatten / AO / PBR) -> export
+    generate_art()  — the slow AI step (SDXL/ControlNet). Produces the raw painted art. Cacheable.
+    style_skin()    — instant, no GPU: colours / placement / brightness / detail / AO / PBR / export.
 
-Single entry point used by both the CLI and the Gradio UI.
+`create_skin()` just runs both (used by the CLI). The UI caches the GenArt so "Apply edits" can
+restyle the same design instantly without regenerating.
 """
 
 from __future__ import annotations
@@ -17,11 +19,22 @@ from .assets import Weapon, get_weapon
 from .export import SkinMaps, export_skin
 from .finishes import FinishStyle, get_style
 from .generate import GenResult, Generator, NEGATIVE
-from .rarity import Rarity, get_rarity, DEFAULT_RARITY
+from .rarity import get_rarity, DEFAULT_RARITY
 from .skintype import SkinType, get_skin_type, DEFAULT_TYPE
 
 # Design hint: two main colours, richly shaded, always highly detailed (never a flat fill).
 DESIGN_HINT = "two main colours with many shades, highly detailed, never flat"
+
+
+@dataclass
+class GenArt:
+    """The raw AI-generated art for a weapon — the cacheable 'design' that styling is applied to."""
+    image: Image.Image
+    weapon: Weapon
+    skin_type: SkinType
+    seed: int
+    prompt: str
+    gen: GenResult
 
 
 @dataclass
@@ -31,30 +44,17 @@ class SkinResult:
     weapon: Weapon
     skin_type: SkinType
     style: FinishStyle
-    rarity: Rarity
     maps: SkinMaps
 
 
-def create_skin(*, prompt: str, weapon: str = "ak47", skin_type: str = DEFAULT_TYPE,
-                style: str | None = None, rarity: str | None = DEFAULT_RARITY,
-                seed: int | None = None, colors: list[str] | None = None,
-                main_colors: list | None = None, color_placement: str = "auto",
-                brightness: float = 1.0, saturation: float = 1.0, detail: float = 1.0,
-                reference_image: Image.Image | None = None, reference_scale: float = 0.9,
-                flatten_strength: float = 1.0, generator: Generator | None = None,
-                mock: bool | None = None) -> SkinResult:
-    """Prompt + skin TYPE (+ optional reference image) -> CS2-ready skin folder.
-
-    The type drives the finish style, material prompt, PBR (metalness/roughness), and whether the
-    art is flattened to its main colours or left as a continuous pattern. Optional controls:
-    main_colors (explicit list, else auto-extracted), color_placement ('auto' or 'size' = base/
-    details by part size), and brightness/saturation/detail multipliers. A reference image (if
-    given) is replicated as closely as possible. AO is always baked in for physical surface detail.
-    """
+def generate_art(*, prompt: str, weapon: str = "ak47", skin_type: str = DEFAULT_TYPE,
+                 rarity: str | None = DEFAULT_RARITY, seed: int | None = None,
+                 reference_image: Image.Image | None = None, reference_scale: float = 0.9,
+                 generator: Generator | None = None, mock: bool | None = None) -> GenArt:
+    """Run the AI generation only (the slow part). The result can be restyled many times cheaply."""
     wpn = get_weapon(weapon)
     st = get_skin_type(skin_type)
     rar = get_rarity(rarity)
-    fin = get_style(style or st.finish_style)
     gen = generator or Generator(mock=mock)
 
     user_prompt = f"{prompt}, {st.prompt}, {DESIGN_HINT}"
@@ -65,17 +65,32 @@ def create_skin(*, prompt: str, weapon: str = "ak47", skin_type: str = DEFAULT_T
     result = gen.generate(user_prompt, wpn, seed=seed, negative=negative,
                           reference_image=reference_image, reference_scale=reference_scale,
                           controlnet_scale=rar.controlnet_scale, steps=rar.steps)
-    base = ImageEnhance.Color(result.image).enhance(st.saturation * saturation)
+    return GenArt(image=result.image, weapon=wpn, skin_type=st, seed=result.seed,
+                  prompt=prompt, gen=result)
 
+
+def style_skin(art: GenArt, *, style: str | None = None, colors: list[str] | None = None,
+               main_colors: list | None = None, color_placement: str = "auto",
+               brightness: float = 1.0, saturation: float = 1.0, detail: float = 1.0,
+               flatten_strength: float = 1.0) -> SkinResult:
+    """Apply styling to already-generated art and export. Fast (no GPU) — this is the 'edit' step.
+
+    main_colors: explicit main colours (else auto-extracted); color_placement 'auto' (by design) or
+    'size' (base vs details by part size); brightness/saturation/detail are multipliers.
+    """
+    wpn, st = art.weapon, art.skin_type
+    fin = get_style(style or st.finish_style)
     _clamp = lambda x, lo, hi: max(lo, min(hi, x))
-    # Type-driven post-processing: collapse to the main colours (explicit or auto), keeping shading.
+
+    base = ImageEnhance.Color(art.image).enhance(st.saturation * saturation)
+
     if st.part_flatten and wpn.uv_path.exists():
         from .partition import flatten_by_parts
         fdetail = _clamp(max(st.flatten_detail, 0.55) * detail, 0.2, 1.1)
         base = flatten_by_parts(base, Image.open(wpn.uv_path), colors=main_colors or None,
                                 assign=color_placement, detail=fdetail, strength=flatten_strength)
-    # ...then ALWAYS bake the weapon's ambient occlusion strongly, so physical detail (panel seams,
-    # magazine ribs, screws) stays visible and even a plain/black skin never looks flat.
+    # Always bake the weapon's ambient occlusion strongly, so physical detail (panel seams, magazine
+    # ribs, screws) stays visible and even a plain/black skin never looks flat.
     ao_path = wpn.base_map("ao")
     if ao_path is not None:
         from .partition import bake_ao
@@ -94,17 +109,32 @@ def create_skin(*, prompt: str, weapon: str = "ak47", skin_type: str = DEFAULT_T
         mask=_default_mask(base) if fin.needs_mask else None,
     )
 
-    out_dir = export_skin(weapon=wpn, style=fin, maps=maps, prompt=prompt,
-                          seed=result.seed, colors=colors, params={k: "" for k in fin.params})
-
+    out_dir = export_skin(weapon=wpn, style=fin, maps=maps, prompt=art.prompt,
+                          seed=art.seed, colors=colors, params={k: "" for k in fin.params})
     try:
         from . import preview
         preview.render(wpn, maps, size=960).save(out_dir / "preview" / "render.png")
     except Exception:
         pass
 
-    return SkinResult(out_dir=out_dir, gen=result, weapon=wpn, skin_type=st, style=fin,
-                      rarity=rar, maps=maps)
+    return SkinResult(out_dir=out_dir, gen=art.gen, weapon=wpn, skin_type=st, style=fin, maps=maps)
+
+
+def create_skin(*, prompt: str, weapon: str = "ak47", skin_type: str = DEFAULT_TYPE,
+                style: str | None = None, rarity: str | None = DEFAULT_RARITY,
+                seed: int | None = None, colors: list[str] | None = None,
+                main_colors: list | None = None, color_placement: str = "auto",
+                brightness: float = 1.0, saturation: float = 1.0, detail: float = 1.0,
+                reference_image: Image.Image | None = None, reference_scale: float = 0.9,
+                flatten_strength: float = 1.0, generator: Generator | None = None,
+                mock: bool | None = None) -> SkinResult:
+    """Generate + style in one call (prompt -> CS2-ready skin folder)."""
+    art = generate_art(prompt=prompt, weapon=weapon, skin_type=skin_type, rarity=rarity, seed=seed,
+                       reference_image=reference_image, reference_scale=reference_scale,
+                       generator=generator, mock=mock)
+    return style_skin(art, style=style, colors=colors, main_colors=main_colors,
+                      color_placement=color_placement, brightness=brightness, saturation=saturation,
+                      detail=detail, flatten_strength=flatten_strength)
 
 
 def _default_mask(base: Image.Image) -> Image.Image:

@@ -1,19 +1,22 @@
-"""Gradio web UI — a simple input window for designing CS2 skins.
+"""Gradio web UI — design and EDIT CS2 skins.
 
 Launch:  python -m cs2skin.app   (or  python -m cs2skin.cli ui)
 
-Left panel = the input form (type, prompt, weapon, optional reference image).
-Right panel = the result (3D preview, PBR maps, where it saved).
+Workflow: ✨ Generate makes a new design (slow, AI). 🎨 Apply edits restyles the SAME design
+instantly (colours / placement / brightness / detail — no regeneration), so you can refine a skin
+you like instead of gambling on a new one. Lock the seed to keep a design while changing the prompt.
 """
 
 from __future__ import annotations
+
+import random
 
 import gradio as gr
 
 from .assets import list_weapons
 from .skintype import list_skin_types, get_skin_type, DEFAULT_TYPE
 from .generate import Generator
-from .pipeline import create_skin
+from .pipeline import generate_art, style_skin
 from .preview import render
 
 _WEAPONS = {w.display: w.key for w in list_weapons()}
@@ -24,7 +27,7 @@ _PLACEMENT = {"By design (auto)": "auto", "Base vs details (by part size)": "siz
 _CSS = """
 #title-row h1 { margin-bottom: 0; }
 .card { border: 1px solid var(--border-color-primary); border-radius: 12px; padding: 14px; }
-.generate-btn { font-size: 1.1rem !important; padding: 14px !important; }
+.generate-btn { font-size: 1.05rem !important; padding: 12px !important; }
 footer { display: none !important; }
 """
 
@@ -43,38 +46,56 @@ def _type_help(type_label: str) -> str:
     return f"**{t.label}** — {t.blurb}"
 
 
-def _run(prompt, type_label, weapon_label, reference, use_colors, color_base, color_details,
-         placement_label, brightness, saturation, detail, progress=gr.Progress()):
+def _style_kwargs(use_colors, c1, c2, placement_label, brightness, saturation, detail):
+    return dict(main_colors=([c1, c2] if use_colors else None),
+                color_placement=_PLACEMENT[placement_label],
+                brightness=float(brightness), saturation=float(saturation), detail=float(detail))
+
+
+def _outputs(res):
+    preview = render(res.weapon, res.maps, size=768)
+    m = res.maps
+    gallery = [(im.convert("RGB"), nm) for nm, im in
+               [("pattern", m.pattern), ("normal", m.normal), ("roughness", m.roughness),
+                ("metalness", m.metalness), ("ao", m.ao), ("mask", m.mask)] if im is not None]
+    info = (f"### ✅ Skin ready\n"
+            f"**{res.weapon.display}** · {res.skin_type.label} · {res.style.workbench_name} · "
+            f"seed `{res.gen.seed}`\n\n"
+            f"🎨 Tweak the colours / appearance below and hit **Apply edits** to restyle this same "
+            f"design instantly.\n\n"
+            f"📁 Saved to `{res.out_dir}` — open **IMPORT.md** there for the CS2 Workbench steps.")
+    return preview, gallery, info
+
+
+def _generate(prompt, type_label, weapon_label, reference, seed, lock,
+              use_colors, c1, c2, placement_label, brightness, saturation, detail,
+              progress=gr.Progress()):
     if not prompt or not prompt.strip():
         raise gr.Error("Please enter a prompt describing the skin you want.")
     progress(0.2, desc="Loading model…")
     gen = _gen()
-    progress(0.4, desc="Generating…")
-    mains = [color_base, color_details] if use_colors else None
-    res = create_skin(
-        prompt=prompt, weapon=_WEAPONS[weapon_label], skin_type=_TYPES[type_label],
-        reference_image=reference, main_colors=mains, color_placement=_PLACEMENT[placement_label],
-        brightness=float(brightness), saturation=float(saturation), detail=float(detail),
-        generator=gen,
-    )
-    progress(0.9, desc="Rendering preview…")
-    preview = render(res.weapon, res.maps, size=768)
-    maps = res.maps
-    gallery = [(m.convert("RGB"), nm) for nm, m in
-               [("pattern", maps.pattern), ("normal", maps.normal), ("roughness", maps.roughness),
-                ("metalness", maps.metalness), ("ao", maps.ao), ("mask", maps.mask)] if m is not None]
-    info = (f"### ✅ Skin created\n"
-            f"**{res.weapon.display}** · {res.skin_type.label} · {res.style.workbench_name} · "
-            f"seed `{res.gen.seed}`{' · (mock)' if res.gen.mock else ''}\n\n"
-            f"📁 Saved to:\n`{res.out_dir}`\n\n"
-            f"Open **IMPORT.md** in that folder for the CS2 Workbench steps.")
-    return preview, gallery, info
+    use_seed = int(seed) if (lock and seed is not None and int(seed) >= 0) else random.randint(0, 2**31 - 1)
+    progress(0.4, desc="Generating new design…")
+    art = generate_art(prompt=prompt, weapon=_WEAPONS[weapon_label], skin_type=_TYPES[type_label],
+                       seed=use_seed, reference_image=reference, generator=gen)
+    progress(0.9, desc="Styling…")
+    res = style_skin(art, **_style_kwargs(use_colors, c1, c2, placement_label, brightness, saturation, detail))
+    preview, gallery, info = _outputs(res)
+    return preview, gallery, info, art, art.seed
+
+
+def _apply(art, use_colors, c1, c2, placement_label, brightness, saturation, detail):
+    if art is None:
+        raise gr.Error("Generate a skin first, then use Apply edits to restyle it.")
+    res = style_skin(art, **_style_kwargs(use_colors, c1, c2, placement_label, brightness, saturation, detail))
+    return _outputs(res)
 
 
 def build() -> gr.Blocks:
     with gr.Blocks(title="CS2 Skin AI") as demo:
+        art_state = gr.State(None)            # cached generated art, for instant restyling
         with gr.Row(elem_id="title-row"):
-            gr.Markdown("# 🔫 CS2 Skin AI\nDescribe a skin → get a Workbench-ready finish for any CS2 weapon.")
+            gr.Markdown("# 🔫 CS2 Skin AI\nDescribe a skin, then edit it live — for any CS2 weapon.")
         with gr.Row():
             # ---------- INPUT PANEL ----------
             with gr.Column(scale=5, elem_classes="card"):
@@ -94,25 +115,34 @@ def build() -> gr.Blocks:
                         color_details = gr.ColorPicker(value="#111111", label="Second / details color")
                     placement = gr.Radio(list(_PLACEMENT), value="By design (auto)",
                                          label="Color placement",
-                                         info="‘Base vs details’ = the biggest parts get the base color, "
-                                              "smaller parts the second (e.g. base white, everything else black)")
+                                         info="‘Base vs details’ = biggest parts get the base color, "
+                                              "smaller parts the second (e.g. base white, rest black)")
                 with gr.Accordion("⚙️ Appearance (optional)", open=False):
                     brightness = gr.Slider(0.5, 1.8, value=1.0, step=0.05, label="Brightness")
                     saturation = gr.Slider(0.3, 1.8, value=1.0, step=0.05, label="Saturation")
                     detail = gr.Slider(0.3, 1.6, value=1.0, step=0.05, label="Detail / texture strength")
-                go = gr.Button("✨ Generate Skin", variant="primary", elem_classes="generate-btn")
+                with gr.Row():
+                    seed = gr.Number(value=-1, label="Seed (-1 = random)", precision=0, scale=2)
+                    lock = gr.Checkbox(value=False, label="🔒 Lock seed", scale=1)
+                with gr.Row():
+                    go = gr.Button("✨ Generate new", variant="primary", elem_classes="generate-btn")
+                    edit = gr.Button("🎨 Apply edits", variant="secondary", elem_classes="generate-btn")
+                gr.Markdown("_Apply edits restyles the current design instantly (no regeneration)._")
 
             # ---------- RESULT PANEL ----------
             with gr.Column(scale=6):
                 preview = gr.Image(label="Preview", height=440)
                 gallery = gr.Gallery(label="PBR texture maps", columns=3, height=300)
-                info = gr.Markdown("_Your generated skin and its details will appear here._")
+                info = gr.Markdown("_Generate a skin to begin, then edit it below._")
 
+        edit_inputs = [art_state, use_colors, color_base, color_details, placement,
+                       brightness, saturation, detail]
         skintype.change(_type_help, skintype, type_help)
-        go.click(_run,
-                 [prompt, skintype, weapon, reference, use_colors, color_base, color_details,
-                  placement, brightness, saturation, detail],
-                 [preview, gallery, info])
+        go.click(_generate,
+                 [prompt, skintype, weapon, reference, seed, lock,
+                  use_colors, color_base, color_details, placement, brightness, saturation, detail],
+                 [preview, gallery, info, art_state, seed])
+        edit.click(_apply, edit_inputs, [preview, gallery, info])
     return demo
 
 
